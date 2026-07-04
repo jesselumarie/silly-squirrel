@@ -32,7 +32,9 @@ export function drawSprite(
   flipX = false,
 ): void {
   ctx.save();
-  ctx.translate(x, y);
+  // Whole-pixel positions keep color-emoji glyphs rasterizing stably from
+  // frame to frame; fractional positions make them shimmer on some devices.
+  ctx.translate(Math.round(x), Math.round(y));
   if (rotation !== 0) ctx.rotate(rotation);
   if (flipX) ctx.scale(-1, 1);
 

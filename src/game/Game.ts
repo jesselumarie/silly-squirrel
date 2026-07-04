@@ -339,10 +339,10 @@ export class Game {
       const t = ((this.elapsed * 0.35 + i / 3) % 1);
       const x = t * w;
       const y = this.wireYAt(t);
-      const flicker = 0.5 + 0.5 * Math.sin(this.elapsed * 30 + i * 9);
-      ctx.fillStyle = `rgba(255, 235, 80, ${0.35 + 0.5 * flicker})`;
+      const pulse = 0.5 + 0.5 * Math.sin(this.elapsed * 6 + i * 2);
+      ctx.fillStyle = `rgba(255, 235, 80, ${0.55 + 0.25 * pulse})`;
       ctx.beginPath();
-      ctx.arc(x, y, 4 + 3 * flicker, 0, Math.PI * 2);
+      ctx.arc(x, y, 4 + 1.5 * pulse, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -351,11 +351,13 @@ export class Game {
     const { ctx } = this;
     const x = this.squirrelX * this.w;
     const size = this.squirrelSize();
-    const bob = Math.sin(this.elapsed * 14) * (this.state === 'playing' ? 3 : 1.5);
-    const y = this.wireYAt(this.squirrelX) - size * 0.45 + bob;
+    const y = this.wireYAt(this.squirrelX) - size * 0.45;
+    // A slow gentle rock reads as "running" without the strobing that a
+    // fast vertical bob causes at emoji sizes.
+    const rock = this.state === 'playing' ? Math.sin(this.elapsed * 6) * 0.07 : 0;
 
     // The emoji squirrel faces left by default; flip when running right.
-    drawSprite(ctx, 'squirrel', '🐿️', x, y, size, 0, this.squirrelDir === 1);
+    drawSprite(ctx, 'squirrel', '🐿️', x, y, size, rock, this.squirrelDir === 1);
 
     // Carried item dangles below the wire with a little sway.
     if (this.carried && this.state === 'playing') {
