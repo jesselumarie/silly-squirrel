@@ -26,6 +26,14 @@ npm run build     # type-check + production build to dist/
 Built with [Vite](https://vitejs.dev/) + TypeScript and a plain HTML canvas —
 no game engine, so it's easy to read and change.
 
+## Debug menu
+
+Tap the **⚙️ gear** in the bottom-right corner (or press `` ` ``) to open the
+debug menu: live difficulty sliders for everything in `TUNING`, Easy / Normal /
+Hard presets, and cheat buttons (+tools, +life, summon the troll). Changes
+apply instantly and are remembered in the browser; "Reset to defaults" puts
+everything back.
+
 ## Adding stuff to the game
 
 Everything is designed to be easy to extend:

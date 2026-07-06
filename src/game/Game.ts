@@ -41,6 +41,7 @@ export class Game {
 
   // The troll fight
   private rebuild = { progress: 0, timeLeft: 0, stompTimer: 0, hammer: 0 };
+  private gameOverTime = 0;
 
   private falling: FallingItem[] = [];
   private effects = new Effects();
@@ -72,10 +73,19 @@ export class Game {
 
   private onKey(e: KeyboardEvent): void {
     if (e.repeat) return; // mashing means real presses — no key-repeat cheating!
+    // Don't steal keys while typing in the debug menu.
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+
     if (e.code === 'ArrowLeft' || e.code === 'KeyA') this.squirrelDir = -1;
     else if (e.code === 'ArrowRight' || e.code === 'KeyD') this.squirrelDir = 1;
-    else if (e.code === 'Space' || e.code === 'Enter') {
+    else if (e.code === 'Space') {
+      // Space only acts in-game, so mashing at game over can't
+      // accidentally start a new run.
       e.preventDefault();
+      if (this.state === 'playing') this.dropItem();
+      else if (this.state === 'rebuild') this.rebuildPress();
+    } else if (e.code === 'Enter') {
       this.onTap();
     }
   }
@@ -84,7 +94,11 @@ export class Game {
     if (this.state === 'menu') this.beginRun();
     else if (this.state === 'playing') this.dropItem();
     else if (this.state === 'rebuild') this.rebuildPress();
-    else if (this.state === 'gameover') this.state = 'menu';
+    else if (this.state === 'gameover') {
+      // A short grace period so frantic mashing doesn't skip the
+      // game-over screen the instant it appears.
+      if (this.elapsed - this.gameOverTime > 1) this.state = 'menu';
+    }
   }
 
   // ------------------------------------------------------------- gameplay
@@ -171,6 +185,7 @@ export class Game {
 
   private endRun(): void {
     this.state = 'gameover';
+    this.gameOverTime = this.elapsed;
     this.best = Math.max(this.best, this.score);
     localStorage.setItem(BEST_SCORE_KEY, String(this.best));
     sfx.gameOver();
@@ -584,7 +599,9 @@ export class Game {
     ctx.fillText(scoreText, 16, 12);
 
     ctx.textAlign = 'right';
-    const hearts = '❤️'.repeat(this.lives) + '🖤'.repeat(TUNING.maxLives - this.lives);
+    const hearts =
+      '❤️'.repeat(Math.max(0, this.lives)) +
+      '🖤'.repeat(Math.max(0, TUNING.maxLives - this.lives));
     ctx.strokeText(hearts, w - 16, 12);
     ctx.fillText(hearts, w - 16, 12);
 
@@ -637,7 +654,7 @@ export class Game {
     ctx.globalAlpha = pulse;
     ctx.font = `bold ${Math.min(w, h) * 0.04}px system-ui, sans-serif`;
     ctx.fillStyle = '#fff';
-    ctx.fillText('TAP TO PLAY', cx, h * 0.86);
+    ctx.fillText('TAP or press ENTER to play', cx, h * 0.86);
     ctx.globalAlpha = 1;
   }
 
@@ -669,7 +686,7 @@ export class Game {
     ctx.globalAlpha = pulse;
     ctx.font = `bold ${Math.min(w, h) * 0.038}px system-ui, sans-serif`;
     ctx.fillStyle = '#fff';
-    ctx.fillText('TAP TO PLAY AGAIN', cx, h * 0.75);
+    ctx.fillText('TAP or press ENTER for menu', cx, h * 0.75);
     ctx.globalAlpha = 1;
   }
 }
