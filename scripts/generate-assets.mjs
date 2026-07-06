@@ -26,7 +26,13 @@ const STYLE =
 const SPRITES = {
   squirrel: 'A happy silly squirrel with a big fluffy tail, running',
   heart: 'A big shiny red love heart',
+  toolbox: 'A red metal toolbox with a handle, slightly open with tools peeking out',
   dumpster: 'A green metal dumpster with an open lid',
+  troll: 'A grumpy but funny green troll with messy hair, kid-friendly and not scary',
+  wrench: 'A silver wrench',
+  hammer: 'A hammer with a wooden handle',
+  saw: 'A hand saw with a wooden handle',
+  screwdriver: 'A screwdriver with a red handle',
   strawberry: 'A juicy red strawberry',
   acorn: 'A shiny brown acorn',
   peanut: 'A peanut in its shell',

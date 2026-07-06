@@ -5,7 +5,7 @@
  * Want to tweak difficulty? Everything lives in TUNING.
  */
 
-export type ItemKind = 'good' | 'bad';
+export type ItemKind = 'good' | 'tool' | 'bad';
 
 export interface ItemDef {
   /** Unique id — also used to look up custom art in /assets/items/<id>.png */
@@ -25,11 +25,34 @@ export const ITEMS: ItemDef[] = [
   { id: 'cookie', emoji: '🍪', name: 'Cookie', kind: 'good' },
   { id: 'cherries', emoji: '🍒', name: 'Cherries', kind: 'good' },
 
+  // Tools → drop them into the toolbox! You'll need them to rebuild
+  // the wire when the troll shows up after each level.
+  { id: 'wrench', emoji: '🔧', name: 'Wrench', kind: 'tool' },
+  { id: 'hammer', emoji: '🔨', name: 'Hammer', kind: 'tool' },
+  { id: 'saw', emoji: '🪚', name: 'Saw', kind: 'tool' },
+  { id: 'screwdriver', emoji: '🪛', name: 'Screwdriver', kind: 'tool' },
+
   // Bad things → toss them in the dumpster!
   { id: 'bomb', emoji: '💣', name: 'Bomb', kind: 'bad' },
   { id: 'dynamite', emoji: '🧨', name: 'Dynamite', kind: 'bad' },
   { id: 'fire', emoji: '🔥', name: 'Fire', kind: 'bad' },
   { id: 'meteor', emoji: '☄️', name: 'Meteor', kind: 'bad' },
+];
+
+/** The three drop zones, left to right. Items land in the zone under them. */
+export interface ZoneDef {
+  kind: ItemKind;
+  /** Sprite id — custom art can live at /assets/items/<id>.png */
+  spriteId: string;
+  emoji: string;
+  label: string;
+  tint: string;
+}
+
+export const ZONES: ZoneDef[] = [
+  { kind: 'good', spriteId: 'heart', emoji: '❤️', label: 'YUMMY!', tint: 'rgba(255, 105, 140, 0.10)' },
+  { kind: 'tool', spriteId: 'toolbox', emoji: '🧰', label: 'TOOLS!', tint: 'rgba(255, 200, 60, 0.12)' },
+  { kind: 'bad', spriteId: 'dumpster', emoji: '🗑️', label: 'TRASH!', tint: 'rgba(120, 130, 145, 0.12)' },
 ];
 
 export const TUNING = {
@@ -43,7 +66,7 @@ export const TUNING = {
   respawnDelay: 0.45,
   /** Points for sorting an item correctly */
   pointsPerCatch: 10,
-  /** Score needed to advance a level (speeds things up) */
+  /** Score needed to advance a level (triggers the troll fight!) */
   pointsPerLevel: 50,
   /** How many mistakes you can make */
   maxLives: 3,
@@ -53,10 +76,22 @@ export const TUNING = {
   wireSag: 0.035,
   /** Where the bins sit, as a fraction of screen height */
   binY: 0.86,
-};
 
-/** The two sides of the screen. Good stuff goes left, bad stuff goes right. */
-export const SIDES = {
-  good: { emoji: '❤️', label: 'YUMMY!', tint: 'rgba(255, 105, 140, 0.10)' },
-  bad: { emoji: '🗑️', label: 'TRASH!', tint: 'rgba(120, 130, 145, 0.12)' },
+  /** The troll fight: mash to rebuild the fallen wire before time runs out. */
+  rebuild: {
+    /** Seconds to finish the rebuild */
+    time: 12,
+    /** Progress (%) added per press with an empty toolbox */
+    perPress: 2.2,
+    /** Extra progress (%) per press for each tool collected this level */
+    perToolBonus: 1.5,
+    /** Progress (%) the troll drains per second at level 1 */
+    drainBase: 2.5,
+    /** Extra drain per second for each level */
+    drainPerLevel: 0.5,
+    /** Seconds between troll SMASH attacks */
+    stompEvery: 3.5,
+    /** Progress (%) knocked off by each SMASH */
+    stompAmount: 7,
+  },
 };

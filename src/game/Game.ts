@@ -1,9 +1,9 @@
-import { ITEMS, SIDES, TUNING, type ItemDef } from './config';
+import { ITEMS, TUNING, ZONES, type ItemDef } from './config';
 import { drawSprite, preloadSprite } from './sprites';
 import { Effects } from './effects';
 import { sfx } from './audio';
 
-type GameState = 'menu' | 'playing' | 'gameover';
+type GameState = 'menu' | 'playing' | 'rebuild' | 'gameover';
 
 interface FallingItem {
   def: ItemDef;
@@ -30,12 +30,17 @@ export class Game {
   private best = 0;
   private lives = TUNING.maxLives;
   private level = 1;
+  /** Tools collected this level — they power the wire rebuild. */
+  private tools = 0;
 
   // Squirrel
   private squirrelX = 0.5; // fraction of width
   private squirrelDir = 1;
   private carried: ItemDef | null = null;
   private respawnTimer = 0;
+
+  // The troll fight
+  private rebuild = { progress: 0, timeLeft: 0, stompTimer: 0, hammer: 0 };
 
   private falling: FallingItem[] = [];
   private effects = new Effects();
@@ -47,13 +52,16 @@ export class Game {
     this.best = Number(localStorage.getItem(BEST_SCORE_KEY) ?? 0);
 
     for (const item of ITEMS) preloadSprite(item.id);
-    for (const id of ['squirrel', 'heart', 'dumpster']) preloadSprite(id);
+    for (const id of ['squirrel', 'heart', 'toolbox', 'dumpster', 'troll']) preloadSprite(id);
 
     window.addEventListener('resize', () => this.resize());
     this.resize();
 
     window.addEventListener('keydown', (e) => this.onKey(e));
     canvas.addEventListener('pointerdown', () => this.onTap());
+
+    // Handy for poking at the game from the browser console / tests.
+    (window as unknown as Record<string, unknown>).__game = this;
   }
 
   start(): void {
@@ -63,7 +71,7 @@ export class Game {
   // ---------------------------------------------------------------- input
 
   private onKey(e: KeyboardEvent): void {
-    if (e.repeat) return;
+    if (e.repeat) return; // mashing means real presses — no key-repeat cheating!
     if (e.code === 'ArrowLeft' || e.code === 'KeyA') this.squirrelDir = -1;
     else if (e.code === 'ArrowRight' || e.code === 'KeyD') this.squirrelDir = 1;
     else if (e.code === 'Space' || e.code === 'Enter') {
@@ -75,6 +83,7 @@ export class Game {
   private onTap(): void {
     if (this.state === 'menu') this.beginRun();
     else if (this.state === 'playing') this.dropItem();
+    else if (this.state === 'rebuild') this.rebuildPress();
     else if (this.state === 'gameover') this.state = 'menu';
   }
 
@@ -85,6 +94,7 @@ export class Game {
     this.score = 0;
     this.lives = TUNING.maxLives;
     this.level = 1;
+    this.tools = 0;
     this.squirrelX = 0.5;
     this.squirrelDir = 1;
     this.falling = [];
@@ -118,28 +128,36 @@ export class Game {
     return TUNING.squirrelBaseSpeed + (this.level - 1) * TUNING.squirrelSpeedPerLevel;
   }
 
+  /** Which of the three zones an x position is over. */
+  private zoneIndexAt(x: number): number {
+    return Math.max(0, Math.min(ZONES.length - 1, Math.floor((x / this.w) * ZONES.length)));
+  }
+
+  /** Center x of a zone's bin. */
+  private binX(zoneIndex: number): number {
+    return ((zoneIndex * 2 + 1) / (ZONES.length * 2)) * this.w;
+  }
+
   private resolveLanding(item: FallingItem): void {
-    const droppedGoodSide = item.x < this.w / 2;
-    const correct = (item.def.kind === 'good') === droppedGoodSide;
-    const binX = droppedGoodSide ? this.w * 0.25 : this.w * 0.75;
+    const zoneIndex = this.zoneIndexAt(item.x);
+    const zone = ZONES[zoneIndex];
+    const correct = zone.kind === item.def.kind;
+    const binX = this.binX(zoneIndex);
     const binY = this.h * TUNING.binY;
 
     if (correct) {
       this.score += TUNING.pointsPerCatch;
       this.effects.floatText(item.x, item.y - 40, `+${TUNING.pointsPerCatch}`, '#ffe14d');
-      this.effects.burst(binX, binY, {
-        emoji: droppedGoodSide ? '💖' : '⭐',
-        count: 10,
-        speed: 240,
-      });
+      if (zone.kind === 'tool') {
+        this.tools += 1;
+        this.effects.floatText(binX, binY - 70, `🧰 x${this.tools}`, '#ffd34d');
+      }
+      const sparkle = zone.kind === 'good' ? '💖' : zone.kind === 'tool' ? '🔩' : '⭐';
+      this.effects.burst(binX, binY, { emoji: sparkle, count: 10, speed: 240 });
       sfx.correct();
 
       const newLevel = 1 + Math.floor(this.score / TUNING.pointsPerLevel);
-      if (newLevel > this.level) {
-        this.level = newLevel;
-        this.effects.floatText(this.w / 2, this.h * 0.4, `LEVEL ${this.level}!`, '#7dffb3');
-        sfx.levelUp();
-      }
+      if (newLevel > this.level) this.startRebuild();
     } else {
       this.lives -= 1;
       this.effects.shake = 14;
@@ -147,12 +165,83 @@ export class Game {
       this.effects.burst(item.x, item.y, { color: '#ff9c3f', count: 20, speed: 380 });
       this.effects.floatText(item.x, item.y - 40, 'OOPS!', '#ff6b6b');
       sfx.wrong();
+      if (this.lives <= 0) this.endRun();
+    }
+  }
 
+  private endRun(): void {
+    this.state = 'gameover';
+    this.best = Math.max(this.best, this.score);
+    localStorage.setItem(BEST_SCORE_KEY, String(this.best));
+    sfx.gameOver();
+  }
+
+  // ---------------------------------------------------------- troll fight
+
+  private startRebuild(): void {
+    this.state = 'rebuild';
+    this.falling = [];
+    this.carried = null;
+    this.rebuild = {
+      progress: 0,
+      timeLeft: TUNING.rebuild.time,
+      stompTimer: TUNING.rebuild.stompEvery,
+      hammer: 0,
+    };
+    this.effects.shake = 12;
+    this.effects.floatText(this.w / 2, this.h * 0.35, 'THE WIRE FELL! 🧌', '#ff6b6b');
+    sfx.wrong();
+  }
+
+  private rebuildPress(): void {
+    const gain = TUNING.rebuild.perPress + this.tools * TUNING.rebuild.perToolBonus;
+    this.rebuild.progress = Math.min(100, this.rebuild.progress + gain);
+    this.rebuild.hammer = 1;
+    sfx.hammer();
+
+    if (this.rebuild.progress >= 100) {
+      this.level += 1;
+      this.tools = 0; // tools are used up fixing the wire
+      this.state = 'playing';
+      this.carried = null;
+      this.respawnTimer = TUNING.respawnDelay;
+      this.effects.floatText(this.w / 2, this.h * 0.4, `LEVEL ${this.level}!`, '#7dffb3');
+      this.effects.burst(this.w / 2, this.h * TUNING.wireY, { emoji: '⚡', count: 16, speed: 300 });
+      sfx.levelUp();
+    }
+  }
+
+  private updateRebuild(dt: number): void {
+    const r = this.rebuild;
+    const cfg = TUNING.rebuild;
+    r.hammer = Math.max(0, r.hammer - dt * 6);
+    r.timeLeft -= dt;
+
+    // The troll works against you...
+    r.progress = Math.max(0, r.progress - (cfg.drainBase + cfg.drainPerLevel * (this.level - 1)) * dt);
+
+    // ...and every few seconds he SMASHES.
+    r.stompTimer -= dt;
+    if (r.stompTimer <= 0) {
+      r.stompTimer += cfg.stompEvery;
+      r.progress = Math.max(0, r.progress - cfg.stompAmount);
+      this.effects.shake = 10;
+      this.effects.floatText(this.w * 0.62, this.h * 0.3, 'TROLL SMASH!', '#ff6b6b');
+      this.effects.burst(this.w * 0.62, this.h * 0.32, { emoji: '💢', count: 6, speed: 200 });
+      sfx.wrong();
+    }
+
+    if (r.timeLeft <= 0) {
+      this.lives -= 1;
       if (this.lives <= 0) {
-        this.state = 'gameover';
-        this.best = Math.max(this.best, this.score);
-        localStorage.setItem(BEST_SCORE_KEY, String(this.best));
-        sfx.gameOver();
+        this.endRun();
+      } else {
+        // Back to the wire — collect more tools and try again at the
+        // same score (the next correct catch re-summons the troll).
+        this.state = 'playing';
+        this.respawnTimer = TUNING.respawnDelay;
+        this.effects.floatText(this.w / 2, this.h * 0.4, 'The troll stopped you! Grab more 🧰!', '#ffb84d');
+        sfx.wrong();
       }
     }
   }
@@ -165,6 +254,7 @@ export class Game {
     this.elapsed += dt;
 
     if (this.state === 'playing') this.update(dt);
+    else if (this.state === 'rebuild') this.updateRebuild(dt);
     this.effects.update(dt, TUNING.gravity * this.h);
     this.draw();
 
@@ -184,7 +274,7 @@ export class Game {
     }
 
     // Pick up the next item after a short delay.
-    if (!this.carried && this.state === 'playing') {
+    if (!this.carried) {
       this.respawnTimer -= dt;
       if (this.respawnTimer <= 0) this.carried = this.randomItem();
     }
@@ -229,7 +319,7 @@ export class Game {
   }
 
   private draw(): void {
-    const { ctx, w, h } = this;
+    const { ctx } = this;
     ctx.save();
     if (this.effects.shake > 0) {
       ctx.translate(
@@ -240,9 +330,16 @@ export class Game {
 
     this.drawBackground();
     this.drawZones();
-    this.drawWire();
-    this.drawSquirrel();
-    this.drawFalling();
+
+    if (this.state === 'rebuild') {
+      this.drawBrokenWire();
+      this.drawRebuildUi();
+    } else {
+      this.drawWire();
+      this.drawSquirrel();
+      this.drawFalling();
+    }
+
     this.effects.draw(ctx);
     this.drawHud();
 
@@ -250,8 +347,6 @@ export class Game {
     else if (this.state === 'gameover') this.drawGameOver();
 
     ctx.restore();
-    void w;
-    void h;
   }
 
   private drawBackground(): void {
@@ -283,40 +378,40 @@ export class Game {
   private drawZones(): void {
     const { ctx, w, h } = this;
     const wireBottom = this.wireYAt(0.5) + 30;
+    const zoneW = w / ZONES.length;
+    const binY = h * TUNING.binY;
+    const binSize = Math.min(w, h) * 0.125;
 
-    // Side tints
-    ctx.fillStyle = SIDES.good.tint;
-    ctx.fillRect(0, wireBottom, w / 2, h - wireBottom);
-    ctx.fillStyle = SIDES.bad.tint;
-    ctx.fillRect(w / 2, wireBottom, w / 2, h - wireBottom);
+    for (let i = 0; i < ZONES.length; i++) {
+      const zone = ZONES[i];
+      ctx.fillStyle = zone.tint;
+      ctx.fillRect(i * zoneW, wireBottom, zoneW, h - wireBottom);
 
-    // Dashed center divider, like the drawing
+      const bounce = Math.sin(this.elapsed * 3 + i * 2) * 4;
+      drawSprite(ctx, zone.spriteId, zone.emoji, this.binX(i), binY + bounce, binSize);
+
+      ctx.font = `bold ${Math.min(w, h) * 0.026}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(60, 40, 50, 0.65)';
+      ctx.fillText(zone.label, this.binX(i), binY + binSize * 0.75);
+    }
+
+    // Dashed dividers between zones, like the drawing
     ctx.strokeStyle = 'rgba(210, 60, 80, 0.55)';
     ctx.lineWidth = 4;
     ctx.setLineDash([18, 14]);
-    ctx.beginPath();
-    ctx.moveTo(w / 2, wireBottom);
-    ctx.lineTo(w / 2, h * 0.92);
-    ctx.stroke();
+    for (let i = 1; i < ZONES.length; i++) {
+      ctx.beginPath();
+      ctx.moveTo(i * zoneW, wireBottom);
+      ctx.lineTo(i * zoneW, h * 0.92);
+      ctx.stroke();
+    }
     ctx.setLineDash([]);
-
-    // Bins
-    const binY = h * TUNING.binY;
-    const binSize = Math.min(w, h) * 0.14;
-    const bounce = Math.sin(this.elapsed * 3) * 4;
-    drawSprite(ctx, 'heart', SIDES.good.emoji, w * 0.25, binY + bounce, binSize);
-    drawSprite(ctx, 'dumpster', SIDES.bad.emoji, w * 0.75, binY - bounce, binSize);
-
-    ctx.font = `bold ${Math.min(w, h) * 0.028}px system-ui, sans-serif`;
-    ctx.fillStyle = 'rgba(60, 40, 50, 0.65)';
-    ctx.fillText(SIDES.good.label, w * 0.25, binY + binSize * 0.75);
-    ctx.fillText(SIDES.bad.label, w * 0.75, binY + binSize * 0.75);
   }
 
-  private drawWire(): void {
+  private drawPoles(): void {
     const { ctx, w } = this;
-
-    // Poles
     ctx.strokeStyle = '#6b4a2f';
     ctx.lineWidth = 8;
     ctx.beginPath();
@@ -325,6 +420,11 @@ export class Game {
     ctx.moveTo(w - 6, this.wireYAt(1) - 20);
     ctx.lineTo(w - 6, this.h * 0.92);
     ctx.stroke();
+  }
+
+  private drawWire(): void {
+    const { ctx, w } = this;
+    this.drawPoles();
 
     // The electrowire itself
     ctx.strokeStyle = '#2c3e50';
@@ -334,7 +434,7 @@ export class Game {
     ctx.quadraticCurveTo(w / 2, this.wireYAt(0.5) + this.h * TUNING.wireSag, w, this.wireYAt(1));
     ctx.stroke();
 
-    // Electric sparks zipping along the wire
+    // Electric sparks gliding along the wire
     for (let i = 0; i < 3; i++) {
       const t = ((this.elapsed * 0.35 + i / 3) % 1);
       const x = t * w;
@@ -345,6 +445,96 @@ export class Game {
       ctx.arc(x, y, 4 + 1.5 * pulse, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+
+  /** The fallen wire: two drooping halves with a gap that closes as you rebuild. */
+  private drawBrokenWire(): void {
+    const { ctx, w, h } = this;
+    this.drawPoles();
+
+    const progress = this.rebuild.progress / 100;
+    const gapHalf = w * 0.28 * (1 - progress) + w * 0.01;
+    const droop = h * 0.22 * (1 - progress);
+    const leftTipX = w / 2 - gapHalf;
+    const rightTipX = w / 2 + gapHalf;
+    const tipY = this.wireYAt(0.5) + droop;
+
+    ctx.strokeStyle = '#2c3e50';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(0, this.wireYAt(0));
+    ctx.quadraticCurveTo(leftTipX * 0.7, tipY + 20, leftTipX, tipY);
+    ctx.moveTo(w, this.wireYAt(1));
+    ctx.quadraticCurveTo(w - (w - rightTipX) * 0.7, tipY + 20, rightTipX, tipY);
+    ctx.stroke();
+
+    // Sparking broken ends
+    const pulse = 0.5 + 0.5 * Math.sin(this.elapsed * 12);
+    ctx.font = `${this.itemSize() * (0.8 + 0.3 * pulse)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('⚡', leftTipX, tipY);
+    ctx.fillText('⚡', rightTipX, tipY);
+
+    // The squirrel hammers at the left end...
+    const size = this.squirrelSize();
+    drawSprite(ctx, 'squirrel', '🐿️', leftTipX - size * 0.7, tipY - size * 0.5, size, 0, true);
+    const swing = -1.1 * this.rebuild.hammer;
+    drawSprite(ctx, 'hammer', '🔨', leftTipX - size * 0.15, tipY - size * 0.7, size * 0.7, swing);
+
+    // ...while the troll yanks on the right end.
+    const trollSize = size * 1.7;
+    const shakeX = Math.sin(this.elapsed * 9) * 4;
+    drawSprite(ctx, 'troll', '🧌', rightTipX + trollSize * 0.55 + shakeX, tipY + trollSize * 0.15, trollSize);
+  }
+
+  private drawRebuildUi(): void {
+    const { ctx, w, h } = this;
+    const r = this.rebuild;
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Countdown
+    const urgent = r.timeLeft < 4;
+    ctx.font = `bold ${Math.min(w, h) * 0.06}px system-ui, sans-serif`;
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    const timeText = `⏰ ${Math.max(0, r.timeLeft).toFixed(1)}`;
+    ctx.strokeText(timeText, w / 2, h * 0.5);
+    ctx.fillStyle = urgent ? '#ff6b6b' : '#fff';
+    ctx.fillText(timeText, w / 2, h * 0.5);
+
+    // Progress bar
+    const barW = w * 0.6;
+    const barH = Math.max(20, h * 0.035);
+    const barX = (w - barW) / 2;
+    const barY = h * 0.58;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+    ctx.beginPath();
+    ctx.roundRect(barX - 4, barY - 4, barW + 8, barH + 8, 12);
+    ctx.fill();
+    const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+    grad.addColorStop(0, '#ffd34d');
+    grad.addColorStop(1, '#7dffb3');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.roundRect(barX, barY, barW * (r.progress / 100), barH, 8);
+    ctx.fill();
+
+    // Instructions
+    const pulse = 0.7 + 0.3 * Math.sin(this.elapsed * 8);
+    ctx.globalAlpha = pulse;
+    ctx.font = `bold ${Math.min(w, h) * 0.04}px system-ui, sans-serif`;
+    ctx.strokeText('MASH SPACE / TAP FAST! 🔨', w / 2, h * 0.68);
+    ctx.fillStyle = '#fff';
+    ctx.fillText('MASH SPACE / TAP FAST! 🔨', w / 2, h * 0.68);
+    ctx.globalAlpha = 1;
+
+    const gain = TUNING.rebuild.perPress + this.tools * TUNING.rebuild.perToolBonus;
+    ctx.font = `${Math.min(w, h) * 0.028}px system-ui, sans-serif`;
+    ctx.fillStyle = '#ffe14d';
+    ctx.fillText(`🧰 ${this.tools} tools → ${gain.toFixed(1)}% per hit`, w / 2, h * 0.74);
   }
 
   private drawSquirrel(): void {
@@ -388,9 +578,10 @@ export class Game {
     ctx.textBaseline = 'top';
     ctx.lineWidth = 6;
     ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-    ctx.strokeText(`⭐ ${this.score}`, 16, 12);
+    const scoreText = `⭐ ${this.score}   🧰 ${this.tools}`;
+    ctx.strokeText(scoreText, 16, 12);
     ctx.fillStyle = '#fff';
-    ctx.fillText(`⭐ ${this.score}`, 16, 12);
+    ctx.fillText(scoreText, 16, 12);
 
     ctx.textAlign = 'right';
     const hearts = '❤️'.repeat(this.lives) + '🖤'.repeat(TUNING.maxLives - this.lives);
@@ -417,32 +608,36 @@ export class Game {
     ctx.textBaseline = 'middle';
 
     const bounce = Math.abs(Math.sin(this.elapsed * 2.5)) * 14;
-    ctx.font = `${Math.min(w, h) * 0.16}px sans-serif`;
-    ctx.fillText('🐿️', cx, h * 0.28 - bounce);
+    ctx.font = `${Math.min(w, h) * 0.14}px sans-serif`;
+    ctx.fillText('🐿️', cx, h * 0.24 - bounce);
 
     ctx.font = `bold ${Math.min(w, h) * 0.075}px system-ui, sans-serif`;
     ctx.lineWidth = 8;
     ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.strokeText('SILLY SQUIRREL', cx, h * 0.42);
+    ctx.strokeText('SILLY SQUIRREL', cx, h * 0.37);
     ctx.fillStyle = '#ffe14d';
-    ctx.fillText('SILLY SQUIRREL', cx, h * 0.42);
+    ctx.fillText('SILLY SQUIRREL', cx, h * 0.37);
 
-    ctx.font = `${Math.min(w, h) * 0.032}px system-ui, sans-serif`;
+    ctx.font = `${Math.min(w, h) * 0.03}px system-ui, sans-serif`;
     ctx.fillStyle = '#fff';
-    ctx.fillText('🍓 Yummy things go in the ❤️', cx, h * 0.54);
-    ctx.fillText('💣 Bad things go in the 🗑️', cx, h * 0.60);
-    ctx.fillText('⬅️ ➡️ steer  •  tap / SPACE to drop', cx, h * 0.66);
+    ctx.fillText('🍓 Yummy things go in the ❤️', cx, h * 0.48);
+    ctx.fillText('🔧 Tools go in the 🧰', cx, h * 0.53);
+    ctx.fillText('💣 Bad things go in the 🗑️', cx, h * 0.58);
+    ctx.fillText('⬅️ ➡️ steer  •  tap / SPACE to drop', cx, h * 0.63);
+    ctx.fillStyle = '#ffd34d';
+    ctx.fillText('🧌 A troll breaks the wire after each level —', cx, h * 0.69);
+    ctx.fillText('MASH to rebuild it! More tools = faster fixing!', cx, h * 0.73);
 
     if (this.best > 0) {
       ctx.fillStyle = '#7dffb3';
-      ctx.fillText(`Best score: ${this.best}`, cx, h * 0.73);
+      ctx.fillText(`Best score: ${this.best}`, cx, h * 0.79);
     }
 
     const pulse = 0.6 + 0.4 * Math.sin(this.elapsed * 4);
     ctx.globalAlpha = pulse;
     ctx.font = `bold ${Math.min(w, h) * 0.04}px system-ui, sans-serif`;
     ctx.fillStyle = '#fff';
-    ctx.fillText('TAP TO PLAY', cx, h * 0.83);
+    ctx.fillText('TAP TO PLAY', cx, h * 0.86);
     ctx.globalAlpha = 1;
   }
 

@@ -54,6 +54,10 @@ export const sfx = {
     tone(880, 0.12, 'sine', 0.16, 0.08);
     tone(1320, 0.18, 'sine', 0.12, 0.16);
   },
+  hammer(): void {
+    tone(240, 0.05, 'square', 0.14);
+    tone(170, 0.07, 'square', 0.1, 0.02);
+  },
   wrong(): void {
     noise(0.35, 0.22);
     tone(90, 0.4, 'sawtooth', 0.2);
