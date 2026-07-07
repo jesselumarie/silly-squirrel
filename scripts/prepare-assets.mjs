@@ -20,9 +20,16 @@
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { ANIMATED, SPRITES, generateSprite, generateSpriteFrame2, processSprite } from './sprite-lib.mjs';
+import {
+  ANIMATED,
+  SPRITES,
+  generateSprite,
+  generateSpriteFrame2,
+  normalizeFramePair,
+  processSprite,
+} from './sprite-lib.mjs';
 
-const PREFIX = 'items-v2/';
+const PREFIX = 'items-v3/';
 const OUT_DIR = path.resolve('public/assets/items');
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
@@ -30,31 +37,32 @@ const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
 let blob = null;
 const cached = new Map();
 
-/** Returns the processed sprite buffer from cache or Gemini, or null. */
+async function upload(name, buffer) {
+  if (!blob) return;
+  await blob.put(`${PREFIX}${name}.png`, buffer, {
+    access: 'public',
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    contentType: 'image/png',
+  });
+}
+
+/** Returns {buf, fresh} from cache or Gemini, or null. Fresh = just generated. */
 async function obtainSprite(name, generate) {
-  const pathname = `${PREFIX}${name}.png`;
-  const cachedUrl = cached.get(pathname);
+  const cachedUrl = cached.get(`${PREFIX}${name}.png`);
   if (cachedUrl) {
     const res = await fetch(cachedUrl);
     if (!res.ok) throw new Error(`blob fetch ${res.status}`);
     console.log(`  ↓ ${name} (from cache)`);
-    return Buffer.from(await res.arrayBuffer());
+    return { buf: Buffer.from(await res.arrayBuffer()), fresh: false };
   }
   if (!GEMINI_KEY) {
     console.log(`  - ${name}: not cached and no GEMINI_API_KEY — emoji fallback`);
     return null;
   }
-  const processed = processSprite(await generate());
-  if (blob) {
-    await blob.put(pathname, processed, {
-      access: 'public',
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: 'image/png',
-    });
-  }
+  const buf = processSprite(await generate());
   console.log(`  ✨ ${name} (generated with Gemini)`);
-  return processed;
+  return { buf, fresh: true };
 }
 
 async function main() {
@@ -80,21 +88,38 @@ async function main() {
     let frame1 = null;
     try {
       frame1 = await obtainSprite(id, () => generateSprite(id, description, GEMINI_KEY));
-      if (frame1) await writeFile(path.join(OUT_DIR, `${id}.png`), frame1);
     } catch (err) {
       console.log(`  ! ${id}: ${err.message} — emoji fallback`);
     }
+    if (!frame1) continue;
 
     const poseChange = ANIMATED[id];
-    if (!poseChange || !frame1) continue;
-    try {
-      const frame2 = await obtainSprite(`${id}_2`, () =>
-        generateSpriteFrame2(frame1, poseChange, GEMINI_KEY),
-      );
-      if (frame2) await writeFile(path.join(OUT_DIR, `${id}_2.png`), frame2);
-    } catch (err) {
-      console.log(`  ! ${id}_2: ${err.message} — will animate frame 1 only`);
+    let frame2 = null;
+    if (poseChange) {
+      try {
+        frame2 = await obtainSprite(`${id}_2`, () =>
+          generateSpriteFrame2(frame1.buf, poseChange, GEMINI_KEY),
+        );
+      } catch (err) {
+        console.log(`  ! ${id}_2: ${err.message} — will animate frame 1 only`);
+      }
     }
+
+    if (frame2) {
+      // Pad the pair to identical canvases so the character doesn't jump
+      // in scale/position between frames.
+      const [b1, b2] = normalizeFramePair(frame1.buf, frame2.buf);
+      const changed = frame1.fresh || frame2.fresh;
+      frame1.buf = b1;
+      await writeFile(path.join(OUT_DIR, `${id}_2.png`), b2);
+      if (changed) {
+        await upload(id, b1);
+        await upload(`${id}_2`, b2);
+      }
+    } else if (frame1.fresh) {
+      await upload(id, frame1.buf);
+    }
+    await writeFile(path.join(OUT_DIR, `${id}.png`), frame1.buf);
   }
 }
 

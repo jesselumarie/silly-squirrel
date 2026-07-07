@@ -80,7 +80,8 @@ export async function generateSpriteFrame2(frame1Png, poseChange, apiKey) {
         text:
           'This is frame 1 of a 2-frame game animation. Draw frame 2: the exact same ' +
           `character in the same style, size, and colors, but with ${poseChange}. ` +
-          'Plain solid white background, no text, no shadow.',
+          'Plain solid pure-white background. Do not add any extra objects, motion lines, ' +
+          'dust clouds, shadows, text, or background details — only the character on white.',
       },
     ],
     apiKey,
@@ -100,29 +101,44 @@ export function processSprite(buffer, maxDim = 256) {
 }
 
 /**
- * If the image is fully opaque with a flat background, make the background
- * transparent. Uses a flood fill from the image border so only pixels
- * CONNECTED to the outside are removed — white fur inside a white-background
- * sprite stays white instead of becoming a hole.
+ * Make the background transparent. Uses a flood fill from the image border
+ * so only pixels CONNECTED to the outside are removed — white fur inside a
+ * white-background sprite stays white instead of becoming a hole. The
+ * background color is the dominant color along the border, which tolerates
+ * slight gradients and stray artifact pixels far better than corner
+ * sampling.
  */
 function keyOutBackground(png) {
   const { width: w, height: h, data } = png;
 
+  // If the image already has real transparency, trust it.
+  let transparent = 0;
   for (let i = 3; i < data.length; i += 4) {
-    if (data[i] < 250) return png; // already has transparency — leave it alone
+    if (data[i] < 250) transparent++;
   }
+  if (transparent > w * h * 0.02) return png;
 
-  // Sample the four corners; if they agree, that's the background color.
-  const corners = [0, (w - 1) * 4, (h - 1) * w * 4, ((h - 1) * w + w - 1) * 4].map((i) => [
-    data[i],
-    data[i + 1],
-    data[i + 2],
-  ]);
-  const bg = [0, 1, 2].map((c) => corners.reduce((sum, k) => sum + k[c], 0) / 4);
-  const spread = Math.max(
-    ...[0, 1, 2].map((c) => Math.max(...corners.map((k) => Math.abs(k[c] - bg[c])))),
-  );
-  if (spread > 40) return png; // corners disagree — probably not a flat background
+  // Dominant border color = the background.
+  const counts = new Map();
+  const borderPixel = (p) => {
+    const key = `${data[p * 4] >> 4},${(data[p * 4 + 1] >> 4)},${data[p * 4 + 2] >> 4}`;
+    const entry = counts.get(key) ?? { n: 0, r: 0, g: 0, b: 0 };
+    entry.n++;
+    entry.r += data[p * 4];
+    entry.g += data[p * 4 + 1];
+    entry.b += data[p * 4 + 2];
+    counts.set(key, entry);
+  };
+  for (let x = 0; x < w; x++) {
+    borderPixel(x);
+    borderPixel((h - 1) * w + x);
+  }
+  for (let y = 0; y < h; y++) {
+    borderPixel(y * w);
+    borderPixel(y * w + w - 1);
+  }
+  const dominant = [...counts.values()].sort((a, b) => b.n - a.n)[0];
+  const bg = [dominant.r / dominant.n, dominant.g / dominant.n, dominant.b / dominant.n];
 
   const distTo = (p) =>
     Math.abs(data[p * 4] - bg[0]) +
@@ -149,6 +165,30 @@ function keyOutBackground(png) {
     if (y < h - 1) stack.push(p + w);
   }
   return png;
+}
+
+/**
+ * Pad two processed animation frames onto identical-size canvases
+ * (bottom-center aligned) so the character doesn't jump in scale or
+ * position when the game flips between them.
+ */
+export function normalizeFramePair(buf1, buf2) {
+  const a = PNG.sync.read(buf1);
+  const b = PNG.sync.read(buf2);
+  const w = Math.max(a.width, b.width);
+  const h = Math.max(a.height, b.height);
+  const pad = (src) => {
+    if (src.width === w && src.height === h) return src;
+    const out = new PNG({ width: w, height: h }); // starts fully transparent
+    const offX = Math.floor((w - src.width) / 2);
+    const offY = h - src.height; // bottom aligned — feet stay planted
+    for (let y = 0; y < src.height; y++) {
+      const from = y * src.width * 4;
+      src.data.copy(out.data, ((y + offY) * w + offX) * 4, from, from + src.width * 4);
+    }
+    return out;
+  };
+  return [PNG.sync.write(pad(a)), PNG.sync.write(pad(b))];
 }
 
 /** Crop away fully transparent padding so the sprite fills its box. */

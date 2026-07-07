@@ -15,7 +15,14 @@
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { ANIMATED, SPRITES, generateSprite, generateSpriteFrame2, processSprite } from './sprite-lib.mjs';
+import {
+  ANIMATED,
+  SPRITES,
+  generateSprite,
+  generateSpriteFrame2,
+  normalizeFramePair,
+  processSprite,
+} from './sprite-lib.mjs';
 
 const API_KEY = process.env.GEMINI_API_KEY;
 const OUT_DIR = path.resolve('public/assets/items');
@@ -30,13 +37,15 @@ await mkdir(OUT_DIR, { recursive: true });
 for (const [id, description] of Object.entries(SPRITES)) {
   process.stdout.write(`Generating ${id}... `);
   try {
-    const frame1 = processSprite(await generateSprite(id, description, API_KEY));
-    await writeFile(path.join(OUT_DIR, `${id}.png`), frame1);
+    let frame1 = processSprite(await generateSprite(id, description, API_KEY));
     if (ANIMATED[id]) {
       const frame2 = processSprite(await generateSpriteFrame2(frame1, ANIMATED[id], API_KEY));
-      await writeFile(path.join(OUT_DIR, `${id}_2.png`), frame2);
+      const [b1, b2] = normalizeFramePair(frame1, frame2);
+      frame1 = b1;
+      await writeFile(path.join(OUT_DIR, `${id}_2.png`), b2);
       process.stdout.write('(2 frames) ');
     }
+    await writeFile(path.join(OUT_DIR, `${id}.png`), frame1);
     console.log('done');
   } catch (err) {
     console.log(`failed (${err.message}) — the game will keep using the emoji for this one`);
