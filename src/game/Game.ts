@@ -1,5 +1,5 @@
 import { ITEMS, TUNING, ZONES, type ItemDef } from './config';
-import { drawSprite, preloadSprite } from './sprites';
+import { animatedId, drawSprite, preloadSprite } from './sprites';
 import { Effects } from './effects';
 import { sfx } from './audio';
 
@@ -53,7 +53,9 @@ export class Game {
     this.best = Number(localStorage.getItem(BEST_SCORE_KEY) ?? 0);
 
     for (const item of ITEMS) preloadSprite(item.id);
-    for (const id of ['squirrel', 'heart', 'toolbox', 'dumpster', 'troll']) preloadSprite(id);
+    for (const id of ['squirrel', 'squirrel_2', 'heart', 'toolbox', 'dumpster', 'troll', 'troll_2']) {
+      preloadSprite(id);
+    }
 
     window.addEventListener('resize', () => this.resize());
     this.resize();
@@ -493,14 +495,16 @@ export class Game {
 
     // The squirrel hammers at the left end...
     const size = this.squirrelSize();
-    drawSprite(ctx, 'squirrel', '🐿️', leftTipX - size * 0.7, tipY - size * 0.5, size, 0, true);
+    const squirrelFrame = animatedId('squirrel', this.elapsed, 7);
+    drawSprite(ctx, squirrelFrame, '🐿️', leftTipX - size * 0.7, tipY + 4, size, 0, true, 'bottom');
     const swing = -1.1 * this.rebuild.hammer;
     drawSprite(ctx, 'hammer', '🔨', leftTipX - size * 0.15, tipY - size * 0.7, size * 0.7, swing);
 
     // ...while the troll yanks on the right end.
     const trollSize = size * 1.7;
     const shakeX = Math.sin(this.elapsed * 9) * 4;
-    drawSprite(ctx, 'troll', '🧌', rightTipX + trollSize * 0.55 + shakeX, tipY + trollSize * 0.15, trollSize);
+    const trollFrame = animatedId('troll', this.elapsed, 4);
+    drawSprite(ctx, trollFrame, '🧌', rightTipX + trollSize * 0.55 + shakeX, tipY + trollSize * 0.15, trollSize);
   }
 
   private drawRebuildUi(): void {
@@ -556,13 +560,15 @@ export class Game {
     const { ctx } = this;
     const x = this.squirrelX * this.w;
     const size = this.squirrelSize();
-    const y = this.wireYAt(this.squirrelX) - size * 0.45;
+    // Anchor the squirrel by its feet so it stands ON the wire.
+    const feetY = this.wireYAt(this.squirrelX) + 3;
     // A slow gentle rock reads as "running" without the strobing that a
     // fast vertical bob causes at emoji sizes.
     const rock = this.state === 'playing' ? Math.sin(this.elapsed * 6) * 0.07 : 0;
+    const frame = this.state === 'playing' ? animatedId('squirrel', this.elapsed) : 'squirrel';
 
     // The emoji squirrel faces left by default; flip when running right.
-    drawSprite(ctx, 'squirrel', '🐿️', x, y, size, rock, this.squirrelDir === 1);
+    drawSprite(ctx, frame, '🐿️', x, feetY, size, rock, this.squirrelDir === 1, 'bottom');
 
     // Carried item dangles below the wire with a little sway.
     if (this.carried && this.state === 'playing') {
@@ -571,7 +577,7 @@ export class Game {
       ctx.strokeStyle = 'rgba(90, 60, 40, 0.7)';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(x, y + size * 0.3);
+      ctx.moveTo(x, feetY - size * 0.2);
       ctx.lineTo(x + sway * 20, itemY - this.itemSize() * 0.4);
       ctx.stroke();
       drawSprite(ctx, this.carried.id, this.carried.emoji, x + sway * 20, itemY, this.itemSize(), sway);

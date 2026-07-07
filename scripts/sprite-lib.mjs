@@ -33,15 +33,24 @@ export const SPRITES = {
   meteor: 'A flaming meteor rock',
 };
 
-/** Ask Gemini for a sprite image; returns a raw PNG buffer. */
-export async function generateSprite(id, description, apiKey) {
+/**
+ * Characters that get a second animation frame (<id>_2.png). The game
+ * flips between the two frames like classic 2-frame cartoon animation.
+ * The value describes how frame 2's pose differs from frame 1.
+ */
+export const ANIMATED = {
+  squirrel: 'its legs in the opposite running position, tail swished the other way',
+  troll: 'both arms raised up high mid-stomp with an angrier face',
+};
+
+async function callGemini(parts, apiKey) {
   const model = process.env.GEMINI_IMAGE_MODEL ?? 'gemini-2.5-flash-image';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: `${description}. ${STYLE}` }] }],
+      contents: [{ parts }],
       generationConfig: { responseModalities: ['IMAGE'] },
     }),
   });
@@ -50,8 +59,32 @@ export async function generateSprite(id, description, apiKey) {
   }
   const data = await res.json();
   const part = data.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
-  if (!part) throw new Error(`No image returned for "${id}"`);
+  if (!part) throw new Error('No image returned');
   return Buffer.from(part.inlineData.data, 'base64');
+}
+
+/** Ask Gemini for a sprite image; returns a raw PNG buffer. */
+export async function generateSprite(id, description, apiKey) {
+  return callGemini([{ text: `${description}. ${STYLE}` }], apiKey);
+}
+
+/**
+ * Generate animation frame 2 from frame 1. Passing frame 1 back as an
+ * image keeps the character consistent between frames.
+ */
+export async function generateSpriteFrame2(frame1Png, poseChange, apiKey) {
+  return callGemini(
+    [
+      { inlineData: { mimeType: 'image/png', data: frame1Png.toString('base64') } },
+      {
+        text:
+          'This is frame 1 of a 2-frame game animation. Draw frame 2: the exact same ' +
+          `character in the same style, size, and colors, but with ${poseChange}. ` +
+          'Plain solid white background, no text, no shadow.',
+      },
+    ],
+    apiKey,
+  );
 }
 
 /**
@@ -61,11 +94,17 @@ export async function generateSprite(id, description, apiKey) {
 export function processSprite(buffer, maxDim = 256) {
   let png = PNG.sync.read(buffer);
   png = keyOutBackground(png);
+  png = trimTransparentEdges(png);
   png = downscale(png, maxDim);
   return PNG.sync.write(png);
 }
 
-/** If the image is fully opaque with a flat background, make it transparent. */
+/**
+ * If the image is fully opaque with a flat background, make the background
+ * transparent. Uses a flood fill from the image border so only pixels
+ * CONNECTED to the outside are removed — white fur inside a white-background
+ * sprite stays white instead of becoming a hole.
+ */
 function keyOutBackground(png) {
   const { width: w, height: h, data } = png;
 
@@ -85,13 +124,64 @@ function keyOutBackground(png) {
   );
   if (spread > 40) return png; // corners disagree — probably not a flat background
 
-  for (let i = 0; i < data.length; i += 4) {
-    const dist =
-      Math.abs(data[i] - bg[0]) + Math.abs(data[i + 1] - bg[1]) + Math.abs(data[i + 2] - bg[2]);
-    if (dist < 70) data[i + 3] = 0;
-    else if (dist < 140) data[i + 3] = Math.round(((dist - 70) / 70) * 255);
+  const distTo = (p) =>
+    Math.abs(data[p * 4] - bg[0]) +
+    Math.abs(data[p * 4 + 1] - bg[1]) +
+    Math.abs(data[p * 4 + 2] - bg[2]);
+
+  const visited = new Uint8Array(w * h);
+  const stack = [];
+  for (let x = 0; x < w; x++) stack.push(x, (h - 1) * w + x);
+  for (let y = 0; y < h; y++) stack.push(y * w, y * w + w - 1);
+
+  while (stack.length > 0) {
+    const p = stack.pop();
+    if (visited[p]) continue;
+    visited[p] = 1;
+    const dist = distTo(p);
+    if (dist >= 140) continue; // hit the sprite outline — stop here
+    data[p * 4 + 3] = dist < 70 ? 0 : Math.round(((dist - 70) / 70) * 255);
+    const x = p % w;
+    const y = (p - x) / w;
+    if (x > 0) stack.push(p - 1);
+    if (x < w - 1) stack.push(p + 1);
+    if (y > 0) stack.push(p - w);
+    if (y < h - 1) stack.push(p + w);
   }
   return png;
+}
+
+/** Crop away fully transparent padding so the sprite fills its box. */
+function trimTransparentEdges(png, margin = 2) {
+  const { width: w, height: h, data } = png;
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (data[(y * w + x) * 4 + 3] > 8) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return png; // fully transparent — leave as is
+  minX = Math.max(0, minX - margin);
+  minY = Math.max(0, minY - margin);
+  maxX = Math.min(w - 1, maxX + margin);
+  maxY = Math.min(h - 1, maxY + margin);
+  const w2 = maxX - minX + 1;
+  const h2 = maxY - minY + 1;
+  if (w2 === w && h2 === h) return png;
+  const out = new PNG({ width: w2, height: h2 });
+  for (let y = 0; y < h2; y++) {
+    const src = ((y + minY) * w + minX) * 4;
+    data.copy(out.data, y * w2 * 4, src, src + w2 * 4);
+  }
+  return out;
 }
 
 /** Box-filter downscale (alpha-weighted so edges don't get halos). */
