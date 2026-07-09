@@ -22,6 +22,8 @@ const FIELDS: Field[] = [
   { path: 'squirrelBaseSpeed', label: 'Squirrel speed', min: 0.08, max: 0.5, step: 0.01 },
   { path: 'squirrelSpeedPerLevel', label: 'Speed gain per level', min: 0, max: 0.15, step: 0.005 },
   { path: 'gravity', label: 'Item fall gravity', min: 0.6, max: 3.5, step: 0.1 },
+  { path: 'carryCount', label: 'Items squirrel carries', min: 1, max: 6, step: 1 },
+  { path: 'rewardCount', label: 'Gifts after beating troll', min: 0, max: 8, step: 1 },
   { path: 'pointsPerLevel', label: 'Points per level', min: 20, max: 150, step: 10 },
   { path: 'maxLives', label: 'Lives (next game)', min: 1, max: 9, step: 1 },
   { path: 'rebuild.time', label: 'Troll: seconds to rebuild', min: 5, max: 30, step: 1 },

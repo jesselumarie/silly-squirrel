@@ -15,6 +15,16 @@ interface FallingItem {
   spin: number;
 }
 
+/** A bonus gift raining down after the troll is defeated. */
+interface Reward {
+  kind: 'life' | 'tool' | 'star';
+  emoji: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+
 const BEST_SCORE_KEY = 'silly-squirrel-best';
 
 export class Game {
@@ -33,11 +43,12 @@ export class Game {
   /** Tools collected this level — they power the wire rebuild. */
   private tools = 0;
 
-  // Squirrel
+  // Squirrel — carries a dangling chain of items; drops the bottom one first.
   private squirrelX = 0.5; // fraction of width
   private squirrelDir = 1;
-  private carried: ItemDef | null = null;
+  private carried: ItemDef[] = [];
   private respawnTimer = 0;
+  private rewards: Reward[] = [];
 
   // The troll fight
   private rebuild = { progress: 0, timeLeft: 0, stompTimer: 0, hammer: 0 };
@@ -114,7 +125,9 @@ export class Game {
     this.squirrelX = 0.5;
     this.squirrelDir = 1;
     this.falling = [];
-    this.carried = this.randomItem();
+    this.rewards = [];
+    this.carried = [];
+    while (this.carried.length < TUNING.carryCount) this.carried.push(this.randomItem());
     this.respawnTimer = 0;
     sfx.levelUp();
   }
@@ -123,20 +136,29 @@ export class Game {
     return ITEMS[Math.floor(Math.random() * ITEMS.length)];
   }
 
+  /** Y position of carried item at chain position i (0 = bottom, drops first). */
+  private carriedItemY(i: number): number {
+    const spacing = this.itemSize() * 0.85;
+    return (
+      this.wireYAt(this.squirrelX) +
+      this.itemSize() * 0.9 +
+      (this.carried.length - 1 - i) * spacing
+    );
+  }
+
   private dropItem(): void {
-    if (!this.carried) return;
+    const item = this.carried.shift();
+    if (!item) return;
     const speed = this.squirrelSpeed() * this.w;
     this.falling.push({
-      def: this.carried,
+      def: item,
       x: this.squirrelX * this.w,
-      y: this.wireYAt(this.squirrelX) + this.itemSize() * 0.9,
+      y: this.carriedItemY(-1), // where the bottom item was hanging
       vx: this.squirrelDir * speed * 0.35,
       vy: 40,
       rotation: 0,
       spin: (Math.random() - 0.5) * 6,
     });
-    this.carried = null;
-    this.respawnTimer = TUNING.respawnDelay;
     sfx.drop();
   }
 
@@ -198,7 +220,8 @@ export class Game {
   private startRebuild(): void {
     this.state = 'rebuild';
     this.falling = [];
-    this.carried = null;
+    this.rewards = [];
+    this.carried = [];
     this.rebuild = {
       progress: 0,
       timeLeft: TUNING.rebuild.time,
@@ -220,12 +243,43 @@ export class Game {
       this.level += 1;
       this.tools = 0; // tools are used up fixing the wire
       this.state = 'playing';
-      this.carried = null;
       this.respawnTimer = TUNING.respawnDelay;
       this.effects.floatText(this.w / 2, this.h * 0.4, `LEVEL ${this.level}!`, '#7dffb3');
       this.effects.burst(this.w / 2, this.h * TUNING.wireY, { emoji: '⚡', count: 16, speed: 300 });
+      this.spawnRewards();
       sfx.levelUp();
     }
+  }
+
+  /** The defeated troll drops gifts: hearts, tools, and stars rain down. */
+  private spawnRewards(): void {
+    const pool: Array<Reward['kind']> = ['tool', 'life', 'star'];
+    for (let i = 0; i < TUNING.rewardCount; i++) {
+      const kind = i === 0 ? 'tool' : pool[Math.floor(Math.random() * pool.length)];
+      this.rewards.push({
+        kind,
+        emoji: kind === 'life' ? '❤️' : kind === 'tool' ? '🧰' : '⭐',
+        x: this.w / 2 + (Math.random() - 0.5) * this.w * 0.2,
+        y: this.wireYAt(0.5),
+        vx: (Math.random() - 0.5) * this.w * 0.25,
+        vy: -this.h * 0.35 - Math.random() * this.h * 0.15, // pop up, then rain down
+      });
+    }
+  }
+
+  private collectReward(reward: Reward): void {
+    if (reward.kind === 'life' && this.lives < TUNING.maxLives) {
+      this.lives += 1;
+      this.effects.floatText(reward.x, reward.y, '+1 ❤️', '#ff8fa3');
+    } else if (reward.kind === 'tool') {
+      this.tools += 1;
+      this.effects.floatText(reward.x, reward.y, '+1 🧰', '#ffd34d');
+    } else {
+      this.score += 20;
+      this.effects.floatText(reward.x, reward.y, '+20 ⭐', '#ffe14d');
+    }
+    this.effects.burst(reward.x, reward.y, { emoji: '✨', count: 6, speed: 180 });
+    sfx.correct();
   }
 
   private updateRebuild(dt: number): void {
@@ -290,10 +344,13 @@ export class Game {
       this.squirrelDir = 1;
     }
 
-    // Pick up the next item after a short delay.
-    if (!this.carried) {
+    // Refill the carrying chain one item at a time.
+    if (this.carried.length < TUNING.carryCount) {
       this.respawnTimer -= dt;
-      if (this.respawnTimer <= 0) this.carried = this.randomItem();
+      if (this.respawnTimer <= 0) {
+        this.carried.push(this.randomItem());
+        this.respawnTimer = TUNING.respawnDelay;
+      }
     }
 
     // Falling items.
@@ -308,6 +365,17 @@ export class Game {
     const landed = this.falling.filter((i) => i.y >= landY);
     this.falling = this.falling.filter((i) => i.y < landY);
     for (const item of landed) this.resolveLanding(item);
+
+    // Troll gifts: pop up, rain down, auto-collect partway down.
+    const collectY = this.h * 0.6;
+    for (const r of this.rewards) {
+      r.vy += gravity * 0.6 * dt;
+      r.x = Math.min(this.w - 20, Math.max(20, r.x + r.vx * dt));
+      r.y += r.vy * dt;
+    }
+    const arrived = this.rewards.filter((r) => r.vy > 0 && r.y >= collectY);
+    this.rewards = this.rewards.filter((r) => !(r.vy > 0 && r.y >= collectY));
+    for (const r of arrived) this.collectReward(r);
   }
 
   // ------------------------------------------------------------- drawing
@@ -570,23 +638,32 @@ export class Game {
     // The emoji squirrel faces left by default; flip when running right.
     drawSprite(ctx, frame, '🐿️', x, feetY, size, rock, this.squirrelDir === 1, 'bottom');
 
-    // Carried item dangles below the wire with a little sway.
-    if (this.carried && this.state === 'playing') {
-      const sway = Math.sin(this.elapsed * 6) * 0.15;
-      const itemY = this.wireYAt(this.squirrelX) + this.itemSize() * 0.9;
+    // The carried items dangle below the wire in a swaying chain;
+    // the bottom one drops first.
+    if (this.carried.length > 0 && this.state === 'playing') {
+      const bottomY = this.carriedItemY(0);
       ctx.strokeStyle = 'rgba(90, 60, 40, 0.7)';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(x, feetY - size * 0.2);
-      ctx.lineTo(x + sway * 20, itemY - this.itemSize() * 0.4);
+      ctx.lineTo(x, bottomY - this.itemSize() * 0.4);
       ctx.stroke();
-      drawSprite(ctx, this.carried.id, this.carried.emoji, x + sway * 20, itemY, this.itemSize(), sway);
+      for (let i = this.carried.length - 1; i >= 0; i--) {
+        const sway = Math.sin(this.elapsed * 6 + (this.carried.length - 1 - i) * 0.9) * 0.15;
+        const item = this.carried[i];
+        drawSprite(ctx, item.id, item.emoji, x + sway * 20, this.carriedItemY(i), this.itemSize(), sway);
+      }
     }
   }
 
   private drawFalling(): void {
     for (const item of this.falling) {
       drawSprite(this.ctx, item.def.id, item.def.emoji, item.x, item.y, this.itemSize(), item.rotation);
+    }
+    for (const r of this.rewards) {
+      const spriteId = r.kind === 'life' ? 'heart' : r.kind === 'tool' ? 'toolbox' : 'star';
+      const wobble = Math.sin(this.elapsed * 8 + r.x) * 0.2;
+      drawSprite(this.ctx, spriteId, r.emoji, r.x, r.y, this.itemSize() * 1.1, wobble);
     }
   }
 

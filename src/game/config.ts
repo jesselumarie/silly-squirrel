@@ -62,8 +62,12 @@ export const TUNING = {
   squirrelSpeedPerLevel: 0.045,
   /** Gravity for falling items, as a fraction of screen height per second² */
   gravity: 1.7,
-  /** Seconds before the squirrel picks up the next item after a drop */
+  /** How many items the squirrel can carry at once (drops the bottom one first) */
+  carryCount: 3,
+  /** Seconds between the squirrel picking up each new item */
   respawnDelay: 0.45,
+  /** Bonus gifts that rain down after beating the troll */
+  rewardCount: 3,
   /** Points for sorting an item correctly */
   pointsPerCatch: 10,
   /** Score needed to advance a level (triggers the troll fight!) */
